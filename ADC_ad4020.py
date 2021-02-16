@@ -1,18 +1,75 @@
-from tkinter import *
-import time
+################################
+## GUI Module is controlling ADC ad4020
+## in bipolar [-10..+10]V single to 
+## differencial conversions
+################################
+
+import tkinter as tk
 import spidev
-import numpy
 import RPi.GPIO as GPIO
 
+class AD4020:
+    def __init__(self, port, mode, cs, speed):
+        self.ad4020_spi = spidev.SpiDev(port, cs)
+        self.ad4020_spi.mode = mode
+        self.ad4020_spi.max_speed_hz = speed
 
-#_______________DEFINES_________________
+    def config(self):
+        config_reg = (  0 << TURBO_EN
+                      | 0 << HIGHZ_EN
+                      | 0 << SPAN_COMPR_EN
+                      | 0 << STATUS_EN)
+        reg_val = [READ_REG, config_reg]
+        self.ad4020_spi.writebytes(reg_val)
+
+    def read(self):
+        raw_code = 0
+
+        #Make a pulse on CNV pin to start conversion
+        GPIO.output(PIN_CNV, GPIO.HIGH)
+        GPIO.output(PIN_CNV, GPIO.LOW)
+
+        raw_code = raw_code.to_bytes(3, "big")
+        raw_code = self.ad4020_spi.xfer(raw_code)
+        #fit raw data to 20 bit value
+        code = ( raw_code[0] << 12 |
+                 raw_code[1] << 4  |
+                 raw_code[2] >> 4)
+
+        LOWEST_POS_CODE = 0x00001       #1           ->   0V
+        HIGHEST_POS_CODE = 0x7FFFF      #524 287     ->   -10V
+        LOWEST_NEG_CODE = 0x80000       #524 288     ->   10V
+        HIGHEST_NEG_CODE = 0xFFFFF      #1 048 575   ->   0V
+       
+        if code >= LOWEST_POS_CODE and code <= HIGHEST_POS_CODE:
+            voltage_val = float(code) / MAX_CODE * VREF
+            if PRINTENABLE:
+                print("voltage_in: %.3f" %(-(voltage_val)))# - OFFSET_ERR)))
+                return voltage_val# - OFFSET_ERR
+            else:
+                return voltage_val# - OFFSET_ERR
+        
+
+        if code >= LOWEST_NEG_CODE and code <= HIGHEST_NEG_CODE:
+            voltage_val = (HIGHEST_NEG_CODE -  float(code)) / MAX_CODE * VREF
+            if PRINTENABLE:
+                print("voltage_in: %.3f" %(voltage_val))# + OFFSET_ERR))
+                return voltage_val# - OFFSET_ERR
+            else:
+                return voltage_val# + OFFSET_ERR
+            
+
+        if PRINTENABLE:  
+            print(raw_code)
+            print(code)
+
+
 ###TOGGLE PRINT TO SHELL###
-PRINTENABLE = 1
+PRINTENABLE = 0
 ########################
-VREF_POS = 5
-VREF_NEG = -5
-
+VREF = 10
 MAX_CODE = 2**19 - 1
+OFFSET_ERR = 2.5571 - 2.4399
 
 #Register access command  (p.27)
 WRITE_REG = 0b00010100
@@ -26,95 +83,36 @@ STATUS_EN     = 4
 
 PIN_CNV = 23
 
-#SPI1 configuraton 
-ad4020_spi = spidev.SpiDev(1, 0) 
-ad4020_spi.mode = 0
-ad4020_spi.max_speed_hz = 10000000
-
-# GPIO numbering, not a pin numbering
+#GPIO numbering, not a pin numbering
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(PIN_CNV, GPIO.OUT, GPIO.PUD_OFF, GPIO.LOW)
 
-
-def ad4020_config(event):
-    config_reg = (  0 << TURBO_EN
-                           | 0 << HIGHZ_EN
-                           | 0 << SPAN_COMPR_EN
-                           | 0 << STATUS_EN)
-    adc_data = [READ_REG, config_reg]
-    ad4020_spi.writebytes(adc_data)
-
-#
-def diff_to_single(vref, vdiff):
-    e1 = numpy.array([[1., 1.], [1., -1]])
-    e2 = numpy.array([vref, vdiff])
-    if vdiff > 0:
-        return numpy.linalg.solve(e1, e2)[0]
-    else:
-        return -(numpy.linalg.solve(e1, e2)[0])
-
-def ad4020_read(event):
-    raw_code = 0
-
-    #Make a pulse on CNV pin to start conversion
-    GPIO.output(PIN_CNV, GPIO.HIGH)
-    GPIO.output(PIN_CNV, GPIO.LOW)
-
-    raw_code = raw_code.to_bytes(3, "big")
-    raw_code = ad4020_spi.xfer(raw_code)
-    #fit raw data to 20 bit value
-    code = ( raw_code[0] << 12 |
-                  raw_code[1] << 4   |
-                  raw_code[2] >> 4)
-
-    LOWEST_POS_CODE = 0x00001
-    HIGHEST_POS_CODE = 0x7FFFF
-    LOWEST_NEG_CODE = 0x80000
-    HIGHEST_NEG_CODE = 0xFFFFF
-   
-    if code >= LOWEST_POS_CODE and code <= HIGHEST_POS_CODE:
-        voltage_diff = float(code) / MAX_CODE * VREF_POS
-        if PRINTENABLE:
-            print("voltag_in: %.3f" %(diff_to_single(VREF_POS, voltage_diff)))
-        else:
-            return diff_to_single(VREF_POS, voltage_diff)
-    
-
-      
-    if code >= LOWEST_NEG_CODE and code <= HIGHEST_NEG_CODE:
-        voltage_diff = float(code) / MAX_CODE * VREF_NEG
-        if PRINTENABLE:
-            print("voltag_in: %.3f" %(diff_to_single(VREF_POS, voltage_diff)))
-        else:
-            return diff_to_single(VREF_POS, voltage_diff)
-
-    if PRINTENABLE:
-        print("Voltage_diff: %.3f" %(voltage_diff))   
-        print(raw_code)
-        print(code)
-        
-def close(event):
+def close():
     GPIO.cleanup()
-    root.destroy()
-   
+    win.destroy()
 
 #_____________DEFINES END________________ 
-root = Tk()
-entry = Entry(root, width = 20)
+if __name__ == "__main__":
+    win = tk.Tk()
+    entry = tk.Entry(win, width = 20)
 
-button_config = Button(root, text = "Config")
-button_read = Button(root, text = "Read")
-button_exit = Button(root, text = "Exit")
+    ADC = AD4020(1, 0, 0, 2000000)   
 
-button_config.bind("<Button-1>", ad4020_config)
-button_read.bind("<Button-1>", ad4020_read)
-button_exit.bind("<Button-1>", close)
+    button_config = tk.Button(win, text = "Config", command = ADC.config)
+    button_config.bind("<Button-1>")
 
-button_config.pack()
-button_read.pack()
-button_exit.pack()
+    button_read = tk.Button(win, text = "Read", command = ADC.read)
+    button_read.bind("<Button-1>")
 
-root.mainloop()
+    button_exit = tk.Button(win, text = "Exit", command = close)
+    button_exit.bind("<Button-1>")
+
+    button_config.pack()
+    button_read.pack()
+    button_exit.pack()
+
+    win.geometry("100x100")
+    win.mainloop()
 
 
 
